@@ -1,5 +1,6 @@
-# 本仓库只发布 index.html 与安装包（*.apk），其余文件一律不入库
+# 本仓库只发布 index.html、安装包（*.apk）与说明（README.md），其余文件一律不入库
 *
 !index.html
 !*.apk
+!README.md
 !.gitignore
