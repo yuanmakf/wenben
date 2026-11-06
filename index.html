@@ -640,6 +640,17 @@
       </div>
       <div class="subsec" data-g="type" data-s="font">
         <div style="height:1px;background:var(--border);opacity:.6;margin:3px 0"></div>
+        <div id="rowTextSec">
+          <label style="font-size:12px;color:var(--muted);display:block;margin-bottom:5px">文字颜色</label>
+          <div class="chips" id="textChips">
+            <div class="chip on" data-t="auto">自动</div>
+            <div class="chip" data-t="black">黑</div>
+            <div class="chip" data-t="white">白</div>
+            <div class="chip" data-t="custom">自定</div>
+          </div>
+          <div class="row" id="rowTextColor" style="display:none"><label>文字色</label><input type="color" id="textCustom" value="#111111"></div>
+        </div>
+        <div style="height:1px;background:var(--border);opacity:.6;margin:3px 0"></div>
         <div class="row"><label>字体</label>
           <select id="fontFamily">
             <option value='"PingFang SC","Microsoft YaHei",sans-serif'>系统默认</option>
@@ -651,21 +662,10 @@
           </select>
         </div>
         <div class="btns">
-          <button type="button" id="bPickFont">📁 选择字体</button>
+          <button type="button" id="bPickFont">📁 导入字体</button>
           <input type="file" id="fontFile" accept=".ttf,.otf,.woff,.woff2,font/*" multiple style="display:none">
         </div>
         <div id="fontChips" class="chips-rail"></div>
-        <div style="height:1px;background:var(--border);opacity:.6;margin:3px 0"></div>
-        <div id="rowTextSec">
-          <label style="font-size:12px;color:var(--muted);display:block;margin-bottom:5px">文字颜色</label>
-          <div class="chips" id="textChips">
-            <div class="chip on" data-t="auto">自动</div>
-            <div class="chip" data-t="black">黑</div>
-            <div class="chip" data-t="white">白</div>
-            <div class="chip" data-t="custom">自定</div>
-          </div>
-          <div class="row" id="rowTextColor" style="display:none"><label>文字色</label><input type="color" id="textCustom" value="#111111"></div>
-        </div>
       </div>
       <div class="subsec" data-g="type" data-s="page">
         <div class="row" id="jumpRow"><label>跳转页</label><input type="number" id="jumpPage" min="1"><button type="button" id="jumpGo" style="flex:none;padding:6px 14px">跳转</button></div>
