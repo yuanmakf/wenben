@@ -651,10 +651,10 @@
           </select>
         </div>
         <div class="btns">
-          <button type="button" id="bDetectFont">📱 扫描手机字体</button>
+          <button type="button" id="bDetectFont">📂 全部字体</button>
         </div>
         <div class="btns">
-          <button type="button" id="bPickFont">📁 选择字体（可多选）</button>
+          <button type="button" id="bPickFont">📁 选择字体</button>
           <input type="file" id="fontFile" accept=".ttf,.otf,.woff,.woff2,font/*" multiple style="display:none">
         </div>
         <div style="height:1px;background:var(--border);opacity:.6;margin:3px 0"></div>
@@ -980,7 +980,7 @@ function auxStyle(px, which){
 
 /* 全局规则：软件中不要有任何提示，任何地方。
    保留空实现以兼容所有调用点；同时禁止调用会弹系统权限框的 API。
-   字体枚举改用原生桥 listSystemFonts 读取 /system/fonts 等公开目录，无需权限、不弹系统框。 */
+   字体探测用 canvas 度量（无权限、不弹系统框），用户导入字体经 FontFace 注册并持久化。 */
 function toast(msg){}
 /* 唯一例外（用户要求找回）：导出流程的结果/进度提示。
    只在这里真正显示浮层，其它任何地方仍保持静默。 */
@@ -1033,7 +1033,7 @@ function detectSystemFonts(){
 }
 const registeredFonts=new Set();   /* 已通过 FontFace 注册的字体名 */
 let userFonts=[];                  /* 用户导入字体 [{name, dataUrl}]，持久化 */
-let sysFonts=[];                   /* 扫描到的手机系统字体 [{name, path, ext}] */
+let sysFonts=[];                   /* 全部字体探测到的可用字体 [{name, css}]，系统已装、直接可用 */
 
 function cssEsc(s){ return String(s).replace(/"/g,'\\"'); }
 function fontMime(ext){ ext=(ext||'').toLowerCase(); if(ext==='.otf')return 'font/otf'; if(ext==='.ttc')return 'font/collection'; if(ext==='.woff')return 'font/woff'; if(ext==='.woff2')return 'font/woff2'; return 'font/ttf'; }
@@ -1047,7 +1047,7 @@ function rebuildFontOptions(){
     const frag=document.createDocumentFragment();
     const mk=(name,val,dataset)=>{ const o=document.createElement('option'); o.value=val; o.textContent=name; o.dataset.dyn='1'; o.style.fontFamily=val; if(dataset) Object.assign(o.dataset, dataset); return o; };
     userFonts.forEach(f=>{ frag.appendChild(mk(f.name, `"${cssEsc(f.name)}", sans-serif`, {user:'1'})); });
-    sysFonts.forEach(f=>{ frag.appendChild(mk(f.name, `"${cssEsc(f.name)}", sans-serif`, {sys:f.path, mime:fontMime(f.ext)})); });
+    sysFonts.forEach(f=>{ frag.appendChild(mk(f.name, f.css+', sans-serif')); });
     sel.insertBefore(frag, sel.firstChild);
     if([...sel.options].some(o=>o.value===cur)) sel.value=cur;
   });
@@ -1076,29 +1076,11 @@ function registerFontFace(name, src){
   });
 }
 
-/* 扫描手机系统字体：Android 走原生枚举（/system/fonts 等公开目录，无权限弹框）；浏览器回退 canvas 探测 */
+/* 全部字体（还原旧版行为）：canvas 探测当前设备真正可用的字体并加入下拉，探测到的字体系统已装、直接可用 */
 function scanSystemFonts(){
-  if(window.AndroidBridge && typeof window.AndroidBridge.listSystemFonts==='function'){
-    try{
-      const arr=JSON.parse(window.AndroidBridge.listSystemFonts()||'[]');
-      if(Array.isArray(arr)) sysFonts=arr;
-    }catch(e){ sysFonts=[]; }
-  }else{
-    sysFonts=detectSystemFonts().map(([n,c])=>({name:n, path:'', ext:'.ttf'}));
-  }
+  sysFonts=detectSystemFonts().map(([n,c])=>({name:n, css:c}));
   rebuildFontOptions();
-}
-
-/* 选中的系统字体若尚未注册，则按需读取字节并注册 FontFace（懒加载，避免一次性载入全部系统字体） */
-function ensureSysFont(opt, cb){
-  const path=opt && opt.dataset.sys;
-  const name=path ? (opt.value.match(/"([^"]+)"/)||[])[1] : null;
-  if(!path || !name || registeredFonts.has(name)){ if(cb)cb(); return; }
-  let b64='';
-  try{ b64=window.AndroidBridge.getFontBytes(path)||''; }catch(e){ b64=''; }
-  if(!b64){ if(cb)cb(); return; }
-  const dataUrl='data:'+(opt.dataset.mime||'font/ttf')+';base64,'+b64;
-  registerFontFace(name, dataUrl).then(()=>{ if(cb)cb(); });
+  loadFontFamilies(sysFonts.map(f=>f.css));
 }
 
 /* 用户导入字体（支持多选）：注册 FontFace 并持久化 */
@@ -1139,30 +1121,15 @@ function loadFonts(){
   }
   try{ const a=JSON.parse(raw); if(Array.isArray(a)) userFonts=a; }catch(e){ userFonts=[]; }
   (userFonts||[]).forEach(f=>{ if(f && f.name && f.dataUrl) registerFontFace(f.name, f.dataUrl); });
-  scanSystemFonts();   /* 同时扫描系统字体，保证下拉选项在 loadSettings 前就绪 */
+  scanSystemFonts();   /* 同时探测全部字体，保证下拉选项在 loadSettings 前就绪 */
   if(document.fonts && document.fonts.ready) document.fonts.ready.then(()=>{ if(!editing) refresh(); });
 }
 
 /* 切换字体（正文 / 页头 / 页尾）后，确保字体就绪再排版，避免度量偏差导致越线 */
 function onFontChange(sel){
-  const opt=sel.options[sel.selectedIndex];
   const m=(sel.value||'').match(/"([^"]+)"/);
-  const fam=m?m[1]:null;
-  if(opt && opt.dataset.sys && fam && !registeredFonts.has(fam)){
-    ensureSysFont(opt, ()=>{ loadFontFamilies(fam?[fam]:[]); });
-    refresh();   /* 先用回退字体排版，加载完成后再排一次 */
-  }else{
-    loadFontFamilies(fam?[fam]:[]);
-    refresh();
-  }
-}
-function ensureSelectedFontsReady(){
-  ['fontFamily','hdrFont','ftrFont'].forEach(id=>{
-    const sel=$(id); if(!sel) return;
-    const opt=sel.options[sel.selectedIndex];
-    const name=(sel.value||'').match(/"([^"]+)"/);
-    if(opt && opt.dataset.sys && name && !registeredFonts.has(name[1])) ensureSysFont(opt, ()=>refresh());
-  });
+  loadFontFamilies(m?[m[1]]:[]);
+  refresh();
 }
 $('bDetectFont').onclick=()=>{ scanSystemFonts(); };
 $('bPickFont').onclick=()=>$('fontFile').click();
@@ -3356,10 +3323,9 @@ try{
   $('floatInput').value = (savedText==null) ? SAMPLE : savedText;
 }catch(e){ $('floatInput').value=SAMPLE; }
 syncBgRows();
-try{ loadFonts(); }catch(e){}   /* 先加载用户字体 + 扫描系统字体（异常不拖垮后续初始化），确保下拉选项在 loadSettings 前就绪 */
+try{ loadFonts(); }catch(e){}   /* 先恢复用户导入字体并探测可用字体（异常不拖垮后续初始化），确保下拉选项在 loadSettings 前就绪 */
 DEFAULTS=readSettings();
 loadSettings();
-ensureSelectedFontsReady();
 loadImages();
 refreshSavedSel();
 if(window._migrateImgTop){
