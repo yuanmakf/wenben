@@ -1,0 +1,5 @@
+# 本仓库只发布 index.html 与安装包（*.apk），其余文件一律不入库
+*
+!index.html
+!*.apk
+!.gitignore
