@@ -657,6 +657,7 @@
           <button type="button" id="bPickFont">📁 选择字体</button>
           <input type="file" id="fontFile" accept=".ttf,.otf,.woff,.woff2,font/*" multiple style="display:none">
         </div>
+        <div id="fontChips" class="chips-rail"></div>
         <div style="height:1px;background:var(--border);opacity:.6;margin:3px 0"></div>
         <div id="rowTextSec">
           <label style="font-size:12px;color:var(--muted);display:block;margin-bottom:5px">文字颜色</label>
@@ -1083,7 +1084,7 @@ function scanSystemFonts(){
   loadFontFamilies(sysFonts.map(f=>f.css));
 }
 
-/* 用户导入字体（支持多选）：注册 FontFace 并持久化 */
+/* 用户导入字体（支持多选）：注册 FontFace 并持久化，新导入置顶并成为默认字体 */
 async function loadCustomFont(file){
   const name=file.name.replace(/\.[^.]+$/, '') || '自定义字体';
   const ext='.'+(String(file.name).split('.').pop()||'ttf').toLowerCase();
@@ -1092,10 +1093,10 @@ async function loadCustomFont(file){
   const dataUrl='data:'+fontMime(ext)+';base64,'+b64;
   const ok=await registerFontFace(name, buf);   /* 直接用原始字节注册，免去 base64 往返 */
   if(ok){
-    if(!userFonts.some(f=>f.name===name)) userFonts.push({name, dataUrl});
-    saveFonts(); rebuildFontOptions();
-  }else{
-    toast('字体加载失败：'+name);
+    userFonts=userFonts.filter(f=>f.name!==name);   /* 同名去重 */
+    userFonts.unshift({name, dataUrl});             /* 新导入置顶 = 默认字体 */
+    saveFonts(); rebuildFontOptions(); renderFontChips();
+    applyDefaultFont(true);
   }
 }
 function arrayBufferToBase64(buf){
@@ -1122,8 +1123,59 @@ function loadFonts(){
   try{ const a=JSON.parse(raw); if(Array.isArray(a)) userFonts=a; }catch(e){ userFonts=[]; }
   (userFonts||[]).forEach(f=>{ if(f && f.name && f.dataUrl) registerFontFace(f.name, f.dataUrl); });
   scanSystemFonts();   /* 同时探测全部字体，保证下拉选项在 loadSettings 前就绪 */
+  renderFontChips();
   if(document.fonts && document.fonts.ready) document.fonts.ready.then(()=>{ if(!editing) refresh(); });
 }
+
+/* 导入字体卡片（横滑）：点卡片 = 设为默认（置顶），点 ✕ = 删除 */
+function renderFontChips(){
+  const box=$('fontChips'); if(!box) return;
+  box.innerHTML='';
+  userFonts.forEach((f,i)=>{
+    const c=document.createElement('div');
+    c.className='schip'+(i===0?' on':'');
+    c.dataset.i=i;
+    const ic=document.createElement('span'); ic.className='ic'; ic.textContent='字';
+    const nm=document.createElement('span'); nm.className='nm'; nm.textContent=f.name;
+    const del=document.createElement('span'); del.className='del'; del.textContent='✕';
+    c.appendChild(ic); c.appendChild(nm); c.appendChild(del);
+    c.style.fontFamily='"'+f.name+'", sans-serif';
+    box.appendChild(c);
+  });
+}
+/* 默认字体 = 顶部的导入字体（正文）；无导入字体时不改动当前选择 */
+function applyDefaultFont(refreshNow){
+  if(!userFonts.length) return;
+  const top=userFonts[0];
+  const sel=$('fontFamily');
+  const val='"'+cssEsc(top.name)+'", sans-serif';
+  if([...sel.options].some(o=>o.value===val)) sel.value=val;
+  loadFontFamilies([top.name]);
+  if(refreshNow) refresh();
+}
+$('fontChips').addEventListener('click', e=>{
+  const chip=e.target.closest('.schip'); if(!chip) return;
+  const i=+chip.dataset.i; const f=userFonts[i]; if(!f) return;
+  if(e.target.closest('.del')){
+    userFonts.splice(i,1);
+    saveFonts(); rebuildFontOptions(); renderFontChips();
+    if(!userFonts.length){
+      const sel=$('fontFamily');
+      const base=[...sel.options].find(o=>!o.dataset.dyn) || sel.options[0];   /* 第一个固定项=系统默认（动态项都插在顶部） */
+      if(base) sel.value=base.value;
+      refresh();
+    }else{
+      applyDefaultFont(true);
+    }
+    return;
+  }
+  if(i>0){
+    userFonts.splice(i,1);
+    userFonts.unshift(f);
+    saveFonts(); rebuildFontOptions(); renderFontChips();
+    applyDefaultFont(true);
+  }
+});
 
 /* 切换字体（正文 / 页头 / 页尾）后，确保字体就绪再排版，避免度量偏差导致越线 */
 function onFontChange(sel){
@@ -3326,6 +3378,7 @@ syncBgRows();
 try{ loadFonts(); }catch(e){}   /* 先恢复用户导入字体并探测可用字体（异常不拖垮后续初始化），确保下拉选项在 loadSettings 前就绪 */
 DEFAULTS=readSettings();
 loadSettings();
+try{ applyDefaultFont(true); }catch(e){}   /* 默认字体 = 顶部的导入字体（覆盖回填，导入字体管理见 #fontChips） */
 loadImages();
 refreshSavedSel();
 if(window._migrateImgTop){
