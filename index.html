@@ -1053,13 +1053,27 @@ function rebuildFontOptions(){
   });
 }
 
-/* 注册一个 FontFace（dataUrl 形式）；已注册则跳过 */
-function registerFontFace(name, dataUrl){
+/* dataUrl → {mime,b64}；base64 → Uint8Array。
+   注意：FontFace 构造器的字符串源必须是 CSS url(...) 格式，裸 dataUrl 字符串会被静默拒绝，
+   因此注册一律传二进制（ArrayBuffer/Uint8Array）——此前传 dataUrl 正是"导入失败、重启丢失、
+   选系统字体无效"的根因。 */
+function dataUrlParts(dataUrl){ const m=/^data:([^;,]*);base64,([\s\S]*)$/.exec(String(dataUrl)||''); return m?{mime:m[1],b64:m[2]}:null; }
+function base64ToUint8Array(b64){ const bin=atob(b64); const bytes=new Uint8Array(bin.length); for(let i=0;i<bin.length;i++) bytes[i]=bin.charCodeAt(i); return bytes; }
+/* 注册一个 FontFace：src 可为 ArrayBuffer/TypedArray（刚导入的文件）或 data:base64 字符串（持久化恢复 / 系统字体字节）；已注册则跳过 */
+function registerFontFace(name, src){
   if(registeredFonts.has(name)) return Promise.resolve(true);
-  try{
-    const ff=new FontFace(name, dataUrl);
-    return ff.load().then(()=>{ document.fonts.add(ff); registeredFonts.add(name); return true; }).catch(()=>false);
-  }catch(e){ return Promise.resolve(false); }
+  return new Promise(res=>{
+    try{
+      let bin=src;
+      if(typeof src==='string'){
+        const p=dataUrlParts(src);
+        if(!p || !p.b64){ res(false); return; }
+        bin=base64ToUint8Array(p.b64);
+      }
+      const ff=new FontFace(name, bin);
+      ff.load().then(()=>{ document.fonts.add(ff); registeredFonts.add(name); res(true); }).catch(()=>res(false));
+    }catch(e){ res(false); }
+  });
 }
 
 /* 扫描手机系统字体：Android 走原生枚举（/system/fonts 等公开目录，无权限弹框）；浏览器回退 canvas 探测 */
@@ -1094,7 +1108,7 @@ async function loadCustomFont(file){
   const buf=await file.arrayBuffer();
   const b64=arrayBufferToBase64(buf);
   const dataUrl='data:'+fontMime(ext)+';base64,'+b64;
-  const ok=await registerFontFace(name, dataUrl);
+  const ok=await registerFontFace(name, buf);   /* 直接用原始字节注册，免去 base64 往返 */
   if(ok){
     if(!userFonts.some(f=>f.name===name)) userFonts.push({name, dataUrl});
     saveFonts(); rebuildFontOptions();
@@ -3342,7 +3356,7 @@ try{
   $('floatInput').value = (savedText==null) ? SAMPLE : savedText;
 }catch(e){ $('floatInput').value=SAMPLE; }
 syncBgRows();
-loadFonts();              /* 先加载用户字体 + 扫描系统字体，确保下拉选项存在，loadSettings 才能正确回填字体 */
+try{ loadFonts(); }catch(e){}   /* 先加载用户字体 + 扫描系统字体（异常不拖垮后续初始化），确保下拉选项在 loadSettings 前就绪 */
 DEFAULTS=readSettings();
 loadSettings();
 ensureSelectedFontsReady();
