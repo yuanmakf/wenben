@@ -1066,20 +1066,86 @@ function rebuildFontOptions(){
    选系统字体无效"的根因。 */
 function dataUrlParts(dataUrl){ const m=/^data:([^;,]*);base64,([\s\S]*)$/.exec(String(dataUrl)||''); return m?{mime:m[1],b64:m[2]}:null; }
 function base64ToUint8Array(b64){ const bin=atob(b64); const bytes=new Uint8Array(bin.length); for(let i=0;i<bin.length;i++) bytes[i]=bin.charCodeAt(i); return bytes; }
-/* 注册一个 FontFace：src 可为 ArrayBuffer/TypedArray（刚导入的文件）或 data:base64 字符串（持久化恢复 / 系统字体字节）；已注册则跳过 */
+
+/* sfnt 修复器：按 sfnt 规范重建字体文件，剔除指定表并重算目录/校验和。
+   用于兜底"制作工具写坏的字体"——部分中文-font 工具产出的 vhea/vmtx 等表数据非法，
+   Windows 宽容但 Chromium/Android WebView 的 OTS 校验器会拒绝整个字体（表现为导入无效）。
+   垂直排版表（vhea/vmtx）本应用用不到，剔除后不影响横排显示。 */
+function sfntTableChecksum(dv,off,len){
+  let s=0; const end=off+((len+3)&~3);
+  for(let i=off;i<end;i+=4){ s=(s+dv.getUint32(i))>>>0; }
+  return s>>>0;
+}
+function sfntStripTables(bin, drop){
+  try{
+    const b=(bin instanceof Uint8Array)?bin:new Uint8Array(bin);
+    if(b.length<12) return null;
+    const dv=new DataView(b.buffer, b.byteOffset, b.byteLength);
+    const ver=dv.getUint32(0);
+    const isTtf=ver===0x00010000 || ver===0x74727565;
+    const isOtto=String.fromCharCode(b[0],b[1],b[2],b[3])==='OTTO';
+    if(!isTtf && !isOtto) return null;   /* WOFF/WOFF2 等压缩容器不处理 */
+    const num=dv.getUint16(4);
+    if(num<1 || 12+16*num>b.length) return null;
+    const tabs=[];
+    for(let i=0;i<num;i++){
+      const o=12+16*i;
+      const t=String.fromCharCode(b[o],b[o+1],b[o+2],b[o+3]);
+      const off=dv.getUint32(o+8), len=dv.getUint32(o+12);
+      if(off+len>b.length) return null;
+      if(drop.indexOf(t)<0) tabs.push({t,off,len});
+    }
+    if(!tabs.length) return null;
+    tabs.sort((a,c)=>a.t<c.t?-1:(a.t>c.t?1:0));
+    const n=tabs.length;
+    let es=0; while((1<<(es+1))<=n) es++;
+    const sr=16*(1<<es), rs=16*n-sr;
+    let off=12+16*n;
+    const placed=tabs.map(tb=>{ const pad=(4-off%4)%4; off+=pad; const at=off; off+=tb.len; return {at,pad}; });
+    const total=(off+3)&~3;
+    const out=new Uint8Array(total);
+    const odv=new DataView(out.buffer);
+    odv.setUint32(0,ver); odv.setUint16(4,n); odv.setUint16(6,sr); odv.setUint16(8,es); odv.setUint16(10,rs);
+    tabs.forEach((tb,i)=>{
+      const o=12+16*i;
+      for(let k=0;k<4;k++) out[o+k]=tb.t.charCodeAt(k);
+      odv.setUint32(o+8, placed[i].at); odv.setUint32(o+12, tb.len);
+      out.set(b.subarray(tb.off, tb.off+tb.len), placed[i].at);
+      odv.setUint32(o+4, sfntTableChecksum(odv, placed[i].at, tb.len));
+    });
+    const hi=tabs.findIndex(t=>t.t==='head');   /* head.checkSumAdjustment 整字体校验 */
+    if(hi>-1){
+      odv.setUint32(placed[hi].at+8, 0);
+      const sum=sfntTableChecksum(odv, 0, total);
+      odv.setUint32(placed[hi].at+8, (0xB1B0AFBA-sum)>>>0);
+    }
+    return out;
+  }catch(e){ return null; }
+}
+
+/* 注册一个 FontFace：src 可为 ArrayBuffer/TypedArray（刚导入的文件）或 data:base64 字符串（持久化恢复）；
+   已注册则跳过。返回实际注册成功的字节（调用方可用于持久化），失败返回 null。
+   兜底链：原始字节 → 去垂直表(vhea/vmtx) → 再去 VDMX/gasp，覆盖制作工具写坏的字体。 */
 function registerFontFace(name, src){
-  if(registeredFonts.has(name)) return Promise.resolve(true);
-  return new Promise(res=>{
-    try{
-      let bin=src;
-      if(typeof src==='string'){
-        const p=dataUrlParts(src);
-        if(!p || !p.b64){ res(false); return; }
-        bin=base64ToUint8Array(p.b64);
-      }
-      const ff=new FontFace(name, bin);
-      ff.load().then(()=>{ document.fonts.add(ff); registeredFonts.add(name); res(true); }).catch(()=>res(false));
-    }catch(e){ res(false); }
+  if(registeredFonts.has(name)) return Promise.resolve(src);
+  return new Promise(async res=>{
+    let bin=src;
+    if(typeof src==='string'){
+      const p=dataUrlParts(src);
+      if(!p || !p.b64){ res(null); return; }
+      bin=base64ToUint8Array(p.b64);
+    }
+    const t1=bin, t2=sfntStripTables(bin,['vhea','vmtx']), t3=sfntStripTables(bin,['vhea','vmtx','VDMX','gasp']);
+    for(const bytes of [t1,t2,t3]){
+      if(!bytes) continue;
+      try{
+        const ff=new FontFace(name, bytes);
+        await ff.load();
+        document.fonts.add(ff); registeredFonts.add(name);
+        res(bytes); return;
+      }catch(e){}
+    }
+    res(null);
   });
 }
 
@@ -1090,15 +1156,16 @@ function scanSystemFonts(){
   loadFontFamilies(sysFonts.map(f=>f.css));
 }
 
-/* 用户导入字体（支持多选）：注册 FontFace 并持久化，新导入置顶并成为默认字体 */
+/* 用户导入字体（支持多选）：注册 FontFace 并持久化，新导入置顶并成为默认字体。
+   registerFontFace 返回实际可用的字节（原始或修复版），持久化以它为准——重启后无需再修复 */
 async function loadCustomFont(file){
   const name=file.name.replace(/\.[^.]+$/, '') || '自定义字体';
   const ext='.'+(String(file.name).split('.').pop()||'ttf').toLowerCase();
   const buf=await file.arrayBuffer();
-  const b64=arrayBufferToBase64(buf);
-  const dataUrl='data:'+fontMime(ext)+';base64,'+b64;
-  const ok=await registerFontFace(name, buf);   /* 直接用原始字节注册，免去 base64 往返 */
-  if(ok){
+  const used=await registerFontFace(name, buf);
+  if(used){
+    const b64=arrayBufferToBase64(used);
+    const dataUrl='data:'+fontMime(ext)+';base64,'+b64;
     userFonts=userFonts.filter(f=>f.name!==name);   /* 同名去重 */
     userFonts.unshift({name, dataUrl});             /* 新导入置顶 = 默认字体 */
     saveFonts(); rebuildFontOptions(); renderFontChips();
