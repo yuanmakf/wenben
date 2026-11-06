@@ -651,9 +651,6 @@
           </select>
         </div>
         <div class="btns">
-          <button type="button" id="bDetectFont">📂 全部字体</button>
-        </div>
-        <div class="btns">
           <button type="button" id="bPickFont">📁 选择字体</button>
           <input type="file" id="fontFile" accept=".ttf,.otf,.woff,.woff2,font/*" multiple style="display:none">
         </div>
@@ -1086,7 +1083,7 @@ function registerFontFace(name, src){
   });
 }
 
-/* 全部字体（还原旧版行为）：canvas 探测当前设备真正可用的字体并加入下拉，探测到的字体系统已装、直接可用 */
+/* 系统字体探测（启动时自动执行，无手动按钮）：canvas 探测当前设备真正可用的字体并加入下拉，探测到的字体系统已装、直接可用 */
 function scanSystemFonts(){
   sysFonts=detectSystemFonts().map(([n,c])=>({name:n, css:c}));
   rebuildFontOptions();
@@ -1206,7 +1203,6 @@ function onFontChange(sel){
   loadFontFamilies(m?[m[1]]:[]);
   refresh();
 }
-$('bDetectFont').onclick=()=>{ scanSystemFonts(); };
 $('bPickFont').onclick=()=>$('fontFile').click();
 $('fontFile').addEventListener('change', async e=>{
   const files=e.target.files; if(!files||!files.length) return;
