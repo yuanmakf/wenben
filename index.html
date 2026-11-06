@@ -1035,22 +1035,31 @@ function detectSystemFonts(){
 const registeredFonts=new Set();   /* 已通过 FontFace 注册的字体名 */
 let userFonts=[];                  /* 用户导入字体 [{name, dataUrl}]，持久化 */
 let sysFonts=[];                   /* 全部字体探测到的可用字体 [{name, css}]，系统已装、直接可用 */
+let fontHide=new Set();            /* 已删除的内置/探测字体（按下拉 value 记），持久化 */
+/* 启动时快照三个下拉的原始内置选项（在其被删改前），删除/恢复均基于此全量重建 */
+const STATIC_FONT_OPTS={};
+['fontFamily','hdrFont','ftrFont'].forEach(sid=>{
+  const sel=$(sid);
+  STATIC_FONT_OPTS[sid]=sel ? [...sel.options].map(o=>({v:o.value, t:o.textContent})) : [];
+});
 
 function cssEsc(s){ return String(s).replace(/"/g,'\\"'); }
 function fontMime(ext){ ext=(ext||'').toLowerCase(); if(ext==='.otf')return 'font/otf'; if(ext==='.ttc')return 'font/collection'; if(ext==='.woff')return 'font/woff'; if(ext==='.woff2')return 'font/woff2'; return 'font/ttf'; }
 
-/* 重建下拉里“动态加入”的字体选项：用户字体置顶，系统字体其次，基础选项在后 */
+/* 全量重建下拉字体选项：导入字体置顶、探测字体其次、内置字体在后；已删除的（fontHide）全部不出现 */
 function rebuildFontOptions(){
   ['fontFamily','hdrFont','ftrFont'].forEach(sid=>{
     const sel=$(sid); if(!sel) return;
     const cur=sel.value;
-    sel.querySelectorAll('option[data-dyn]').forEach(o=>o.remove());
-    const frag=document.createDocumentFragment();
-    const mk=(name,val,dataset)=>{ const o=document.createElement('option'); o.value=val; o.textContent=name; o.dataset.dyn='1'; o.style.fontFamily=val; if(dataset) Object.assign(o.dataset, dataset); return o; };
-    userFonts.forEach(f=>{ frag.appendChild(mk(f.name, `"${cssEsc(f.name)}", sans-serif`, {user:'1'})); });
-    sysFonts.forEach(f=>{ frag.appendChild(mk(f.name, f.css+', sans-serif')); });
-    sel.insertBefore(frag, sel.firstChild);
-    if([...sel.options].some(o=>o.value===cur)) sel.value=cur;
+    const statics=STATIC_FONT_OPTS[sid]||[];
+    sel.innerHTML='';
+    const mk=(name,val,dyn)=>{ const o=document.createElement('option'); o.value=val; o.textContent=name; if(dyn) o.dataset.dyn='1'; o.style.fontFamily=val; return o; };
+    userFonts.forEach(f=>{ sel.appendChild(mk(f.name, `"${cssEsc(f.name)}", sans-serif`, true)); });
+    sysFonts.forEach(f=>{ const v=f.css+', sans-serif'; if(!fontHide.has(v)) sel.appendChild(mk(f.name, v, true)); });
+    statics.forEach(s=>{ if(!fontHide.has(s.v)) sel.appendChild(mk(s.t, s.v, false)); });
+    /* 保证下拉至少有一个可用字体：全删光时自动找回第一个内置项（系统默认） */
+    if(!sel.options.length && statics.length) sel.appendChild(mk(statics[0].t, statics[0].v, false));
+    sel.value=[...sel.options].some(o=>o.value===cur) ? cur : (sel.options[0]?sel.options[0].value:'');
   });
 }
 
@@ -1105,9 +1114,9 @@ function arrayBufferToBase64(buf){
   return btoa(binary);
 }
 
-/* 字体持久化（写入 App 私有目录，重启必在） */
+/* 字体持久化（写入 App 私有目录，重启必在）：导入字体 + 已删除字体清单 */
 function saveFonts(){
-  const json=JSON.stringify(userFonts);
+  const json=JSON.stringify({v:1, user:userFonts, hide:[...fontHide]});
   if(window.AndroidBridge && typeof window.AndroidBridge.fsWriteFonts==='function'){
     try{ window.AndroidBridge.fsWriteFonts(json); return; }catch(e){}
   }
@@ -1120,61 +1129,75 @@ function loadFonts(){
   }else{
     try{ raw=localStorage.getItem('qwen.card.fonts.v1')||'[]'; }catch(e){}
   }
-  try{ const a=JSON.parse(raw); if(Array.isArray(a)) userFonts=a; }catch(e){ userFonts=[]; }
+  let user=[], hide=[];
+  try{
+    const a=JSON.parse(raw);
+    if(Array.isArray(a)) user=a;                       /* 兼容旧格式（仅导入字体的数组） */
+    else if(a && typeof a==='object'){ user=Array.isArray(a.user)?a.user:[]; hide=Array.isArray(a.hide)?a.hide:[]; }
+  }catch(e){}
+  userFonts=user; fontHide=new Set(hide);
   (userFonts||[]).forEach(f=>{ if(f && f.name && f.dataUrl) registerFontFace(f.name, f.dataUrl); });
   scanSystemFonts();   /* 同时探测全部字体，保证下拉选项在 loadSettings 前就绪 */
   renderFontChips();
   if(document.fonts && document.fonts.ready) document.fonts.ready.then(()=>{ if(!editing) refresh(); });
 }
 
-/* 导入字体卡片（横滑）：点卡片 = 设为默认（置顶），点 ✕ = 删除 */
+/* 字体卡片（横滑）：列出下拉里的全部字体——导入、探测、内置——任何一张都可 ✕ 删除；点卡片 = 应用该字体 */
 function renderFontChips(){
   const box=$('fontChips'); if(!box) return;
   box.innerHTML='';
-  userFonts.forEach((f,i)=>{
+  const cur=$('fontFamily') ? $('fontFamily').value : '';
+  const mk=(label,val)=>{
     const c=document.createElement('div');
-    c.className='schip'+(i===0?' on':'');
-    c.dataset.i=i;
-    const ic=document.createElement('span'); ic.className='ic'; ic.textContent='字';
-    const nm=document.createElement('span'); nm.className='nm'; nm.textContent=f.name;
+    c.className='schip'+(val===cur?' on':'');
+    c.dataset.val=val;
+    const nm=document.createElement('span'); nm.className='nm'; nm.textContent=label;
     const del=document.createElement('span'); del.className='del'; del.textContent='✕';
-    c.appendChild(ic); c.appendChild(nm); c.appendChild(del);
-    c.style.fontFamily='"'+f.name+'", sans-serif';
+    c.appendChild(nm); c.appendChild(del);
+    c.style.fontFamily=val;
     box.appendChild(c);
-  });
+  };
+  userFonts.forEach(f=>mk(f.name, `"${cssEsc(f.name)}", sans-serif`));
+  sysFonts.forEach(f=>{ const v=f.css+', sans-serif'; if(!fontHide.has(v)) mk(f.name, v); });
+  (STATIC_FONT_OPTS.fontFamily||[]).forEach(s=>{ if(!fontHide.has(s.v)) mk(s.t, s.v); });
+  if(fontHide.size){   /* 有已删字体时提供恢复入口，防误删 */
+    const g=document.createElement('div');
+    g.className='schip ghost'; g.textContent='↺ 恢复已删';
+    box.appendChild(g);
+  }
 }
-/* 默认字体 = 顶部的导入字体（正文）；无导入字体时不改动当前选择 */
+/* 默认字体 = 顶部的导入字体（正文）；无导入字体时保证当前选择有效（被删则回落到第一项） */
 function applyDefaultFont(refreshNow){
-  if(!userFonts.length) return;
-  const top=userFonts[0];
-  const sel=$('fontFamily');
-  const val='"'+cssEsc(top.name)+'", sans-serif';
-  if([...sel.options].some(o=>o.value===val)) sel.value=val;
-  loadFontFamilies([top.name]);
+  const sel=$('fontFamily'); if(!sel) return;
+  if(userFonts.length){
+    const top=userFonts[0];
+    const val=`"${cssEsc(top.name)}", sans-serif`;
+    if([...sel.options].some(o=>o.value===val)) sel.value=val;
+    loadFontFamilies([top.name]);
+  }else if(sel.options.length && ![...sel.options].some(o=>o.value===sel.value)){
+    sel.value=sel.options[0].value;
+  }
+  renderFontChips();
   if(refreshNow) refresh();
 }
 $('fontChips').addEventListener('click', e=>{
   const chip=e.target.closest('.schip'); if(!chip) return;
-  const i=+chip.dataset.i; const f=userFonts[i]; if(!f) return;
-  if(e.target.closest('.del')){
-    userFonts.splice(i,1);
-    saveFonts(); rebuildFontOptions(); renderFontChips();
-    if(!userFonts.length){
-      const sel=$('fontFamily');
-      const base=[...sel.options].find(o=>!o.dataset.dyn) || sel.options[0];   /* 第一个固定项=系统默认（动态项都插在顶部） */
-      if(base) sel.value=base.value;
-      refresh();
-    }else{
-      applyDefaultFont(true);
-    }
+  if(chip.classList.contains('ghost')){   /* 恢复全部已删字体 */
+    fontHide.clear();
+    saveFonts(); rebuildFontOptions(); renderFontChips(); applyDefaultFont(true);
     return;
   }
-  if(i>0){
-    userFonts.splice(i,1);
-    userFonts.unshift(f);
-    saveFonts(); rebuildFontOptions(); renderFontChips();
-    applyDefaultFont(true);
+  const val=chip.dataset.val; if(!val) return;
+  if(e.target.closest('.del')){
+    const ui=userFonts.findIndex(f=>`"${cssEsc(f.name)}", sans-serif`===val);
+    if(ui>-1) userFonts.splice(ui,1);   /* 导入字体直接删除 */
+    else fontHide.add(val);             /* 内置 / 探测字体记入已删清单 */
+    saveFonts(); rebuildFontOptions(); applyDefaultFont(true);
+    return;
   }
+  /* 点卡片 = 应用该字体到正文 */
+  const sel=$('fontFamily');
+  if([...sel.options].some(o=>o.value===val)){ sel.value=val; onFontChange(sel); renderFontChips(); }
 });
 
 /* 切换字体（正文 / 页头 / 页尾）后，确保字体就绪再排版，避免度量偏差导致越线 */
